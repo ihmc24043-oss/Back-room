@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Backrooms - 3D</title>
+    <style>
+        :root {
+            --bg: #1a1a0a;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            cursor: default;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #overlay {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            pointer-events: none;
+            transition: opacity 1.5s ease;
+        }
+
+        #overlay.active {
+            pointer-events: all;
+            opacity: 1;
+        }
+
+        #overlay.fading {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #overlay-box {
+            background: rgba(0, 0, 0, 0.85);
+            border: 2px solid #c8a84e;
+            padding: 40px 50px;
+            text-align: center;
+            color: #d4c08a;
+            border-radius: 4px;
+            box-shadow: 0 0 60px rgba(200, 168, 78, 0.25), inset 0 0 30px rgba(200, 168, 78, 0.05);
+        }
+
+        #overlay-box h1 {
+            font-size: 2.2em;
+            letter-spacing: 6px;
+            margin-bottom: 8px;
+            color: #e8d89e;
+            text-shadow: 0 0 30px rgba(220, 190, 100, 0.6);
+            font-weight: normal;
+        }
+
+        #overlay-box .subtitle {
+            font-size: 0.75em;
+            letter-spacing: 4px;
+            color: #9a8a5a;
+            margin-bottom: 28px;
+        }
+
+        #overlay-box .instructions {
+            font-size: 0.8em;
+            line-height: 2;
+            color: #b8a870;
+            letter-spacing: 2px;
+        }
+
+        #overlay-box .key {
+            display: inline-block;
+            background: rgba(200, 168, 78, 0.2);
+            border: 1px solid #6a5a30;
+            padding: 4px 10px;
+            border-radius: 3px;
+            margin: 0 2px;
+            font-size: 0.9em;
+            letter-spacing: 1px;
+            color: #e0d090;
+        }
+
+        #overlay-box .click-prompt {
+            margin-top: 30px;
+            font-size: 1em;
+            letter-spacing: 3px;
+            color: #c8a84e;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%,
+            100% {
+                opacity: 0.5;
+            }
+            50% {
+                opacity: 1;
+            }
+        }
+
+        #vignette {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 5;
+            background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
+        }
+
+        #info-hud {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 8;
+            pointer-events: none;
+            color: rgba(180, 160, 100, 0.5);
+            font-family: 'Courier New', monospace;
+            font-size: 0.7em;
+            letter-spacing: 3px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="overlay" class="active">
+        <div id="overlay-box">
+            <h1>THE BACKROOMS</h1>
+            <p class="subtitle">you're not supposed to be here</p>
+            <p class="instructions">
+                <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> to move<br>
+                <span class="key">MOUSE</span> to look around<br>
+                <span class="key">SHIFT</span> to sprint
+            </p>
+            <p class="click-prompt">[ CLICK TO ENTER ]</p>
+        </div>
+    </div>
+
+    <div id="vignette"></div>
+    <div id="info-hud">LEVEL 0 &mdash; THE LOBBY</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ───────────────────────────────────
+        // CONSTANTS
+        // ───────────────────────────────────
+        const CELL_SIZE = 4;
+        const WALL_HEIGHT = 2.8;
+        const WALL_THICKNESS = 0.18;
+        const PLAYER_HEIGHT = 1.6;
+        const PLAYER_RADIUS = 0.35;
+        const WALK_SPEED = 5.5;
+        const SPRINT_SPEED = 9.0;
+        const MOUSE_SENSITIVITY = 0.002;
+        const PITCH_LIMIT = Math.PI / 2.4;
+
+        // ───────────────────────────────────
+        // MAP DEFINITION (21x21 grid)
+        // 0 = walkable, 1 = solid wall
+        // ───────────────────────────────────
+        const MAP = [
+            // 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], // 0
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // 1
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1], // 2
+            [1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1], // 3
+            [1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1], // 4
+            [1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1], // 5
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // 6
+            [1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1], // 7
+            [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1], // 8
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1], // 9
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1], // 10
+            [1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1], // 11
+            [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // 12
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // 13
+            [1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1], // 14
+            [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1], // 15
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1], // 16
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1], // 17
+            [1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1], // 18
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // 19
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], // 20
+        ];
+
+        const ROWS = MAP.length;
+        const COLS = MAP[0].length;
+
+        // ───────────────────────────────────
+        // SCENE SETUP
+        // ───────────────────────────────────
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.Fog(0xc8b878, 15, 65);
+        scene.background = new THREE.Color(0xc8b878);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.1;
+        document.body.appendChild(renderer.domElement);
+
+        const camera = new THREE.PerspectiveCamera(78, window.innerWidth / window.innerHeight, 0.15, 80);
+        camera.rotation.order = 'YXZ';
+
+        // ───────────────────────────────────
+        // AUDIO - Ambient Fluorescent Hum
+        // ───────────────────────────────────
+        let audioCtx = null;
+        let humGain = null;
+        let humActive = false;
+
+        function startAmbientHum() {
+            if (humActive) return;
+            humActive = true;
+            try {
+                audioCtx = new(window.AudioContext || window.webkitAudioContext)();
+                humGain = audioCtx.createGain();
+                humGain.gain.value = 0.06;
+                humGain.connect(audioCtx.destination);
+
+                // 60Hz base + harmonics for fluorescent buzz
+                [60, 120, 180, 240].forEach((freq, i) => {
+                    const osc = audioCtx.createOscillator();
+                    osc.type = 'sawtooth';
+                    osc.frequency.value = freq + (Math.random() - 0.5) * 1.5;
+                    const g = audioCtx.createGain();
+                    g.gain.value = [0.7, 0.35, 0.18, 0.08][i] || 0.04;
+                    osc.connect(g);
+                    g.connect(humGain);
+                    osc.start();
+                });
+
+                // Subtle crackle
+                const bufferSize = audioCtx.sampleRate * 2;
+                const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const data = noiseBuffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = (Math.random() * 2 - 1) * 0.03;
+                }
+                const noiseSource = audioCtx.createBufferSource();
+                noiseSource.buffer = noiseBuffer;
+                noiseSource.loop = true;
+                const noiseGain = audioCtx.createGain();
+                noiseGain.gain.value = 0.015;
+                noiseSource.connect(noiseGain);
+                noiseGain.connect(humGain);
+                noiseSource.start();
+
+                // Subtle low-frequency throb
+                const lfo = audioCtx.createOscillator();
+                lfo.frequency.value = 0.35;
+                lfo.type = 'sine';
+                const lfoGain = audioCtx.createGain();
+                lfoGain.gain.value = 0.03;
+                lfo.connect(lfoGain);
+                lfoGain.connect(humGain);
+                lfo.start();
+            } catch (e) {
+                console.warn('Audio not available:', e);
+            }
+        }
+
+        // ───────────────────────────────────
+        // MATERIALS
+        // ───────────────────────────────────
+        const wallMaterial = new THREE.MeshStandardMaterial({
+            color: 0xc8a84e,
+            roughness: 0.65,
+            metalness: 0.02,
+        });
+
+        const wallMaterialAlt = new THREE.MeshStandardMaterial({
+            color: 0xbf9f45,
+            roughness: 0.68,
+            metalness: 0.02,
+        });
+
+        const floorMaterial = new THREE.MeshStandardMaterial({
+            color: 0xb8a070,
+            roughness: 0.9,
+            metalness: 0.0,
+        });
+
+        const ceilingMaterial = new THREE.MeshStandardMaterial({
+            color: 0xe6e0d4,
+            roughness: 0.78,
+            metalness: 0.01,
+        });
+
+        const lightFixtureMaterial = new THREE.MeshStandardMaterial({
+            color: 0xfffbe8,
+            roughness: 0.3,
+            metalness: 0.1,
+            emissive: 0xfff8d0,
+            emissiveIntensity: 2.5,
+        });
+
+        const baseboardMaterial = new THREE.MeshStandardMaterial({
+            color: 0x8a7a50,
+            roughness: 0.55,
+            metalness: 0.05,
+        });
+
+        // ───────────────────────────────────
+        // BUILD ENVIRONMENT FROM MAP
+        // ───────────────────────────────────
+        const environmentGroup = new THREE.Group();
+        scene.add(environmentGroup);
+
+        const worldOffsetX = -(COLS / 2) * CELL_SIZE;
+        const worldOffsetZ = -(ROWS / 2) * CELL_SIZE;
+
+        function cellCenterWorld(r, c) {
+            return {
+                x: worldOffsetX + c * CELL_SIZE + CELL_SIZE / 2,
+                z: worldOffsetZ + r * CELL_SIZE + CELL_SIZE / 2,
+            };
+        }
+
+        // Floor - one large plane covering the entire grid
+        const floorGeo = new THREE.PlaneGeometry(COLS * CELL_SIZE, ROWS * CELL_SIZE);
+        floorGeo.rotateX(-Math.PI / 2);
+        const floorMesh = new THREE.Mesh(floorGeo, floorMaterial);
+        floorMesh.position.set(0, 0, 0);
+        floorMesh.receiveShadow = true;
+        environmentGroup.add(floorMesh);
+
+        // Carpet grid lines (subtle)
+        const carpetLineMat = new THREE.MeshBasicMaterial({
+            color: 0xa89060,
+            transparent: true,
+            opacity: 0.25,
+            side: THREE.DoubleSide,
+        });
+        for (let r = 0; r <= ROWS; r++) {
+            const lineGeo = new THREE.PlaneGeometry(COLS * CELL_SIZE, 0.04);
+            lineGeo.rotateX(-Math.PI / 2);
+            const line = new THREE.Mesh(lineGeo, carpetLineMat);
+            line.position.set(0, 0.003, worldOffsetZ + r * CELL_SIZE);
+            line.renderOrder = 1;
+            line.material.depthTest = true;
+            line.material.depthWrite = false;
+            environmentGroup.add(line);
+        }
+        for (let c = 0; c <= COLS; c++) {
+            const lineGeo = new THREE.PlaneGeometry(0.04, ROWS * CELL_SIZE);
+            lineGeo.rotateX(-Math.PI / 2);
+            const line = new THREE.Mesh(lineGeo, carpetLineMat);
+            line.position.set(worldOffsetX + c * CELL_SIZE, 0.003, 0);
+            line.renderOrder = 1;
+            line.material.depthTest = true;
+            line.material.depthWrite = false;
+            environmentGroup.add(line);
+        }
+
+        // Ceiling - one large plane
+        const ceilingGeo = new THREE.PlaneGeometry(COLS * CELL_SIZE, ROWS * CELL_SIZE);
+        const ceilingMesh = new THREE.Mesh(ceilingGeo, ceilingMaterial);
+        ceilingMesh.position.set(0, WALL_HEIGHT, 0);
+        ceilingMesh.rotation.x = Math.PI / 2;
+        ceilingMesh.receiveShadow = true;
+        environmentGroup.add(ceilingMesh);
+
+        // Ceiling tile grid
+        const tileLineMat = new THREE.MeshBasicMaterial({
+            color: 0xccc8b8,
+            transparent: true,
+            opacity: 0.3,
+            side: THREE.DoubleSide,
+        });
+        for (let r = 0; r <= ROWS; r++) {
+            const lineGeo = new THREE.PlaneGeometry(COLS * CELL_SIZE, 0.03);
+            const line = new THREE.Mesh(lineGeo, tileLineMat);
+            line.position.set(0, WALL_HEIGHT - 0.005, worldOffsetZ + r * CELL_SIZE);
+            line.rotation.x = Math.PI / 2;
+            line.renderOrder = 1;
+            line.material.depthTest = true;
+            line.material.depthWrite = false;
+            environmentGroup.add(line);
+        }
+        for (let c = 0; c <= COLS; c++) {
+            const lineGeo = new THREE.PlaneGeometry(0.03, ROWS * CELL_SIZE);
+            const line = new THREE.Mesh(lineGeo, tileLineMat);
+            line.position.set(worldOffsetX + c * CELL_SIZE, WALL_HEIGHT - 0.005, 0);
+            line.rotation.x = Math.PI / 2;
+            line.renderOrder = 1;
+            line.material.depthTest = true;
+            line.material.depthWrite = false;
+            environmentGroup.add(line);
+        }
+
+        // Walls - iterate through walkable cells and add walls on boundaries with solid cells
+        const wallsGroup = new THREE.Group();
+        environmentGroup.add(wallsGroup);
+
+        const allWallData = []; // store wall info for potential use
+
+        function addWall(cx, cz, width, depth, height, material) {
+            const geo = new THREE.BoxGeometry(width, height, depth);
+            const mesh = new THREE.Mesh(geo, material);
+            mesh.position.set(cx, height / 2, cz);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            wallsGroup.add(mesh);
+            allWallData.push({ mesh, cx, cz, width, depth });
+        }
+
+        // Use alternating wall material based on room region
+        function getWallMaterial(r, c) {
+            // Simple hash for slight variation
+            const hash = (r * 7 + c * 13) % 5;
+            return hash === 0 ? wallMaterialAlt : wallMaterial;
+        }
+
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                if (MAP[r][c] !== 0) continue;
+                const center = cellCenterWorld(r, c);
+                const mat = getWallMaterial(r, c);
+
+                // North neighbor
+                if (r === 0 || MAP[r - 1][c] === 1) {
+                    addWall(center.x, center.z - CELL_SIZE / 2, CELL_SIZE, WALL_THICKNESS, WALL_HEIGHT, mat);
+                }
+                // South neighbor
+                if (r === ROWS - 1 || MAP[r + 1][c] === 1) {
+                    addWall(center.x, center.z + CELL_SIZE / 2, CELL_SIZE, WALL_THICKNESS, WALL_HEIGHT, mat);
+                }
+                // West neighbor
+                if (c === 0 || MAP[r][c - 1] === 1) {
+                    addWall(center.x - CELL_SIZE / 2, center.z, WALL_THICKNESS, CELL_SIZE, WALL_HEIGHT, mat);
+                }
+                // East neighbor
+                if (c === COLS - 1 || MAP[r][c + 1] === 1) {
+                    addWall(center.x + CELL_SIZE / 2, center.z, WALL_THICKNESS, CELL_SIZE, WALL_HEIGHT, mat);
+                }
+
+                // Baseboards - small trim at bottom of walkable area edges
+                const bbH = 0.15;
+                const bbD = 0.08;
+                const bbMat = baseboardMaterial;
+                if (r === 0 || MAP[r - 1][c] === 1) {
+                    const bbGeo = new THREE.BoxGeometry(CELL_SIZE, bbH, bbD);
+                    const bb = new THREE.Mesh(bbGeo, bbMat);
+                    bb.position.set(center.x, bbH / 2, center.z - CELL_SIZE / 2 + WALL_THICKNESS / 2);
+                    bb.castShadow = true;
+                    wallsGroup.add(bb);
+                }
+                if (r === ROWS - 1 || MAP[r + 1][c] === 1) {
+                    const bbGeo = new THREE.BoxGeometry(CELL_SIZE, bbH, bbD);
+                    const bb = new THREE.Mesh(bbGeo, bbMat);
+                    bb.position.set(center.x, bbH / 2, center.z + CELL_SIZE / 2 - WALL_THICKNESS / 2);
+                    bb.castShadow = true;
+                    wallsGroup.add(bb);
+                }
+                if (c === 0 || MAP[r][c - 1] === 1) {
+                    const bbGeo = new THREE.BoxGeometry(bbD, bbH, CELL_SIZE);
+                    const bb = new THREE.Mesh(bbGeo, bbMat);
+                    bb.position.set(center.x - CELL_SIZE / 2 + WALL_THICKNESS / 2, bbH / 2, center.z);
+                    bb.castShadow = true;
+                    wallsGroup.add(bb);
+                }
+                if (c === COLS - 1 || MAP[r][c + 1] === 1) {
+                    const bbGeo = new THREE.BoxGeometry(bbD, bbH, CELL_SIZE);
+                    const bb = new THREE.Mesh(bbGeo, bbMat);
+                    bb.position.set(center.x + CELL_SIZE / 2 - WALL_THICKNESS / 2, bbH / 2, center.z);
+                    bb.castShadow = true;
+                    wallsGroup.add(bb);
+                }
+            }
+        }
+
+        // ───────────────────────────────────
+        // LIGHTING
+        // ───────────────────────────────────
+        const ambientLight = new THREE.AmbientLight(0xfff5e0, 0.6);
+        scene.add(ambientLight);
+
+        const hemisphereLight = new THREE.HemisphereLight(0xfff8e8, 0x8a7a50, 0.35);
+        scene.add(hemisphereLight);
+
+        // Fluorescent light fixtures on ceiling
+        const lightsGroup = new THREE.Group();
+        environmentGroup.add(lightsGroup);
+
+        const flickerData = []; // { light, baseIntensity, phase, speed, amplitude }
+
+        function addCeilingLight(worldX, worldZ, flickerType = 'normal') {
+            // Fixture housing
+            const fixtureGeo = new THREE.BoxGeometry(1.2, 0.1, 3.2);
+            const fixture = new THREE.Mesh(fixtureGeo, lightFixtureMaterial);
+            fixture.position.set(worldX, WALL_HEIGHT - 0.06, worldZ);
+            fixture.castShadow = true;
+            lightsGroup.add(fixture);
+
+            // Lens/diffuser
+            const lensGeo = new THREE.PlaneGeometry(0.9, 2.8);
+            const lensMat = new THREE.MeshStandardMaterial({
+                color: 0xffffff,
+                roughness: 0.1,
+                metalness: 0.05,
+                emissive: 0xfffff0,
+                emissiveIntensity: 4.0,
+            });
+            const lens = new THREE.Mesh(lensGeo, lensMat);
+            lens.position.set(worldX, WALL_HEIGHT - 0.11, worldZ);
+            lens.rotation.x = -Math.PI / 2;
+            lightsGroup.add(lens);
+
+            // Point light for illumination
+            const pointLight = new THREE.PointLight(0xfff8e0, 18, 10, 1.5);
+            pointLight.position.set(worldX, WALL_HEIGHT - 0.25, worldZ);
+            pointLight.castShadow = true;
+            pointLight.shadow.mapSize.width = 256;
+            pointLight.shadow.mapSize.height = 256;
+            pointLight.shadow.camera.near = 0.1;
+            pointLight.shadow.camera.far = 20;
+            pointLight.shadow.bias = -0.0005;
+            pointLight.shadow.radius = 2;
+            lightsGroup.add(pointLight);
+
+            const phase = Math.random() * Math.PI * 2;
+            const speed = 0.5 + Math.random() * 3;
+            const amplitude = flickerType === 'erratic' ? 0.35 : flickerType === 'subtle' ? 0.06 : 0.12;
+
+            flickerData.push({
+                light: pointLight,
+                lens,
+                baseIntensity: pointLight.intensity,
+                baseEmissive: lensMat.emissiveIntensity,
+                phase,
+                speed,
+                amplitude,
+            });
+        }
+
+        // Place lights periodically over walkable areas
+        const lightPlacementSet = new Set();
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                if (MAP[r][c] !== 0) continue;
+                // Place lights every 2 cells in both directions
+                if (r % 2 === 0 && c % 2 === 0) {
+                    const key = `${Math.floor(r/2)},${Math.floor(c/2)}`;
+                    if (!lightPlacementSet.has(key)) {
+                        lightPlacementSet.add(key);
+                        const center = cellCenterWorld(r, c);
+                        // Slight offset so lights aren't perfectly grid-aligned with walls
+                        const ox = (Math.random() - 0.5) * 0.5;
+                        const oz = (Math.random() - 0.5) * 0.5;
+                        const flickType = Math.random() < 0.15 ? 'erratic' : Math.random() < 0.4 ? 'subtle' :
+                        'normal';
+                        addCeilingLight(center.x + ox, center.z + oz, flickType);
+                    }
+                }
+            }
+        }
+
+        // ───────────────────────────────────
+        // PLAYER SETUP
+        // ───────────────────────────────────
+        const playerPos = new THREE.Vector3();
+        const playerVelocity = new THREE.Vector3();
+        let yaw = Math.PI; // start facing "south" (positive Z direction in map)
+        let pitch = -0.05;
+
+        // Find a spawn point - first walkable cell near the center
+        function findSpawnPoint() {
+            const midR = Math.floor(ROWS / 2);
+            const midC = Math.floor(COLS / 2);
+            // Search outward from center
+            for (let radius = 0; radius < Math.max(ROWS, COLS); radius++) {
+                for (let dr = -radius; dr <= radius; dr++) {
+                    for (let dc = -radius; dc <= radius; dc++) {
+                        const r = midR + dr;
+                        const c = midC + dc;
+                        if (r >= 0 && r < ROWS && c >= 0 && c < COLS && MAP[r][c] === 0) {
+                            const center = cellCenterWorld(r, c);
+                            return { x: center.x, z: center.z, r, c };
+                        }
+                    }
+                }
+            }
+            return { x: 0, z: 0, r: 0, c: 0 };
+        }
+
+        const spawn = findSpawnPoint();
+        playerPos.set(spawn.x, PLAYER_HEIGHT, spawn.z);
+        camera.position.copy(playerPos);
+        camera.rotation.y = yaw;
+        camera.rotation.x = pitch;
+
+        // ───────────────────────────────────
+        // COLLISION DETECTION
+        // ───────────────────────────────────
+        function getGridCell(wx, wz) {
+            const c = Math.floor((wx - worldOffsetX) / CELL_SIZE);
+            const r = Math.floor((wz - worldOffsetZ) / CELL_SIZE);
+            return { r, c };
+        }
+
+        function isWalkable(wx, wz) {
+            const { r, c } = getGridCell(wx, wz);
+            if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return false;
+            return MAP[r][c] === 0;
+        }
+
+        function checkCollisionAt(x, z) {
+            // Check multiple points around the player's radius
+            const checks = [
+                { dx: 0, dz: 0 },
+                { dx: PLAYER_RADIUS, dz: 0 },
+                { dx: -PLAYER_RADIUS, dz: 0 },
+                { dx: 0, dz: PLAYER_RADIUS },
+                { dx: 0, dz: -PLAYER_RADIUS },
+                { dx: PLAYER_RADIUS * 0.7, dz: PLAYER_RADIUS * 0.7 },
+                { dx: -PLAYER_RADIUS * 0.7, dz: PLAYER_RADIUS * 0.7 },
+                { dx: PLAYER_RADIUS * 0.7, dz: -PLAYER_RADIUS * 0.7 },
+                { dx: -PLAYER_RADIUS * 0.7, dz: -PLAYER_RADIUS * 0.7 },
+            ];
+
+            for (const check of checks) {
+                if (!isWalkable(x + check.dx, z + check.dz)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // ───────────────────────────────────
+        // INPUT HANDLING
+        // ───────────────────────────────────
+        const keys = {};
+        let pointerLocked = false;
+
+        document.addEventListener('keydown', (e) => {
+            keys[e.key.toLowerCase()] = true;
+            if (e.key === 'Escape' && pointerLocked) {
+                // Don't prevent default escape behavior entirely,
+                // but we note it for re-locking
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            keys[e.key.toLowerCase()] = false;
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!pointerLocked) return;
+            yaw -= e.movementX * MOUSE_SENSITIVITY;
+            pitch -= e.movementY * MOUSE_SENSITIVITY;
+            pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            pointerLocked = document.pointerLockElement === renderer.domElement;
+            if (pointerLocked) {
+                document.getElementById('overlay').classList.add('fading');
+                document.getElementById('overlay').classList.remove('active');
+                startAmbientHum();
+            } else {
+                document.getElementById('overlay').classList.remove('fading');
+                document.getElementById('overlay').classList.add('active');
+            }
+        });
+
+        renderer.domElement.addEventListener('click', () => {
+            if (!pointerLocked) {
+                renderer.domElement.requestPointerLock();
+            }
+        });
+
+        document.getElementById('overlay').addEventListener('click', () => {
+            if (!pointerLocked) {
+                renderer.domElement.requestPointerLock();
+            }
+        });
+
+        // ───────────────────────────────────
+        // GAME LOOP
+        // ───────────────────────────────────
+        const clock = new THREE.Clock();
+        let lastFlickerTime = 0;
+
+        function updateFlickeringLights(time) {
+            if (time - lastFlickerTime < 0.03) return; // Update ~30fps for performance
+            lastFlickerTime = time;
+
+            for (const fd of flickerData) {
+                const noise = Math.sin(time * fd.speed + fd.phase) *
+                    Math.sin(time * fd.speed * 1.7 + fd.phase + 1.3) *
+                    Math.cos(time * fd.speed * 2.3 + fd.phase + 2.7);
+                const flicker = 1.0 - Math.abs(noise) * fd.amplitude;
+
+                // Occasionally add sharper dips
+                const sharpDip = Math.sin(time * 13.7 + fd.phase * 5.1);
+                const dipFactor = sharpDip > 0.92 ? 0.4 : 1.0;
+
+                const intensity = fd.baseIntensity * flicker * dipFactor;
+                fd.light.intensity = Math.max(intensity * 0.3, intensity);
+                if (fd.lens) {
+                    fd.lens.material.emissiveIntensity = fd.baseEmissive * flicker * dipFactor;
+                }
+            }
+        }
+
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            const dt = Math.min(clock.getDelta(), 0.15);
+
+            if (pointerLocked) {
+                // Determine speed
+                const speed = keys['shift'] ? SPRINT_SPEED : WALK_SPEED;
+
+                // Compute movement direction from yaw
+                const forwardX = -Math.sin(yaw);
+                const forwardZ = -Math.cos(yaw);
+                const rightX = Math.cos(yaw);
+                const rightZ = -Math.sin(yaw);
+
+                let moveX = 0;
+                let moveZ = 0;
+
+                if (keys['w']) { moveX += forwardX;
+                    moveZ += forwardZ; }
+                if (keys['s']) { moveX -= forwardX;
+                    moveZ -= forwardZ; }
+                if (keys['a']) { moveX -= rightX;
+                    moveZ -= rightZ; }
+                if (keys['d']) { moveX += rightX;
+                    moveZ += rightZ; }
+
+                // Normalize horizontal movement
+                const len = Math.sqrt(moveX * moveX + moveZ * moveZ);
+                if (len > 0.001) {
+                    moveX = (moveX / len) * speed * dt;
+                    moveZ = (moveZ / len) * speed * dt;
+                }
+
+                // Collision detection - check X and Z independently for wall sliding
+                const newX = playerPos.x + moveX;
+                const newZ = playerPos.z + moveZ;
+
+                if (checkCollisionAt(newX, playerPos.z)) {
+                    playerPos.x = newX;
+                } else if (moveX !== 0) {
+                    // Try with reduced step
+                    const reducedX = playerPos.x + moveX * 0.3;
+                    if (checkCollisionAt(reducedX, playerPos.z)) {
+                        playerPos.x = reducedX;
+                    }
+                }
+
+                if (checkCollisionAt(playerPos.x, newZ)) {
+                    playerPos.z = newZ;
+                } else if (moveZ !== 0) {
+                    const reducedZ = playerPos.z + moveZ * 0.3;
+                    if (checkCollisionAt(playerPos.x, reducedZ)) {
+                        playerPos.z = reducedZ;
+                    }
+                }
+
+                // Update camera
+                playerPos.y = PLAYER_HEIGHT;
+                camera.position.copy(playerPos);
+                camera.rotation.y = yaw;
+                camera.rotation.x = pitch;
+
+                // Subtle head bob
+                const isMoving = Math.abs(moveX) > 0.0001 || Math.abs(moveZ) > 0.0001;
+                if (isMoving && keys['shift']) {
+                    const bobFreq = 10;
+                    const bobAmp = 0.04;
+                    camera.position.y += Math.abs(Math.sin(timestamp * 0.001 * bobFreq)) * bobAmp;
+                } else if (isMoving) {
+                    const bobFreq = 7;
+                    const bobAmp = 0.025;
+                    camera.position.y += Math.abs(Math.sin(timestamp * 0.001 * bobFreq)) * bobAmp;
+                }
+
+                // Update flickering lights
+                updateFlickeringLights(timestamp * 0.001);
+
+                // Subtle fog color shift
+                const fogShift = Math.sin(timestamp * 0.0003) * 0.04;
+                scene.fog.color.setRGB(
+                    0.784 + fogShift,
+                    0.722 + fogShift * 0.8,
+                    0.47 + fogShift * 0.5
+                );
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // ───────────────────────────────────
+        // RESIZE HANDLER
+        // ───────────────────────────────────
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // ───────────────────────────────────
+        // START
+        // ───────────────────────────────────
+        // Initial camera position
+        camera.position.copy(playerPos);
+        camera.rotation.y = yaw;
+        camera.rotation.x = pitch;
+
+        console.log('%c🏚️  Welcome to The Backrooms %c| Level 0 - The Lobby',
+            'color: #c8a84e; font-size: 1.2em;', 'color: #aaa;');
+        console.log('%cClick the screen to begin exploring...', 'color: #999; font-style: italic;');
+        console.log('%cMap size: ' + ROWS + '×' + COLS + ' | Walkable cells: ' +
+            MAP.flat().filter(v => v === 0).length,
+            'color: #777;');
+
+        // Start the game loop
+        requestAnimationFrame(animate);
+
+        // ───────────────────────────────────
+        // EXPORT FOR DEBUG (optional)
+        // ───────────────────────────────────
+        if (typeof window !== 'undefined') {
+            window.__backrooms = {
+                scene,
+                camera,
+                playerPos,
+                MAP,
+                flickerData,
+                get playerGrid() {
+                    return getGridCell(playerPos.x, playerPos.z);
+                },
+                resetPlayer() {
+                    const sp = findSpawnPoint();
+                    playerPos.set(sp.x, PLAYER_HEIGHT, sp.z);
+                    yaw = Math.PI;
+                    pitch = -0.05;
+                    camera.position.copy(playerPos);
+                    camera.rotation.y = yaw;
+                    camera.rotation.x = pitch;
+                },
+            };
+        }
+
+        console.log('%c✅ Game initialized. Click to play. %c(debug: window.__backrooms)',
+            'color: #8a8;', 'color: #666;');
+    </script>
+</body>
+</html>
